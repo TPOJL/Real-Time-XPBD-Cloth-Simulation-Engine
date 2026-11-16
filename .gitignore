@@ -1,0 +1,184 @@
+# =============================================================================
+# 1. Secrets, API Keys, Tokens, Certificates & Credentials (NEVER COMMIT)
+# =============================================================================
+.env
+.env.*
+*.env
+!.env.example
+!.env.template
+
+*secret*
+*Secret*
+*SECRET*
+*credentials*
+*Credentials*
+*apikey*
+*api_key*
+*api-key*
+*token*
+!*.tokenize*
+client_secret*.json
+service-account*.json
+gcloud-service-key*.json
+.netrc
+.pypirc
+.aws/
+.gcp/
+
+# Private keys & certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.pkcs12
+*.crt
+*.cer
+*.der
+*.csr
+*.jks
+*.keystore
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+
+# =============================================================================
+# 2. Python Bytecode, Virtual Environments & JIT Caches (Numba / Cython)
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.dylib
+*.dll
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+.python-version
+
+# Numba / Cython / PyInstaller caches
+.numba_cache/
+*.nbc
+*.nbi
+cython_debug/
+*.manifest
+*.spec
+
+# =============================================================================
+# 3. Test Suites, Coverage, Profiling & Temporary Test Builds
+# =============================================================================
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+.dmypy.json
+.ruff_cache/
+.pyre/
+.pytype/
+
+# Test builds, scratch directories, logs & profiling dumps
+tmp/
+temp/
+scratch/
+test_build*/
+test_output*/
+test_runs*/
+benchmark_results*/
+out/
+output/
+*.log
+*.prof
+*.lprof
+*.trace
+*.dmp
+
+# =============================================================================
+# 4. Packaging & Distribution Artifacts
+# =============================================================================
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+PIP_FILE_LIST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# =============================================================================
+# 5. Presentation & LaTeX / Beamer Build Intermediates
+# =============================================================================
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.nav
+*.out
+*.run.xml
+*.snm
+*.synctex
+*.synctex(busy)
+*.synctex.gz
+*.Synctex.gz(busy)
+*.toc
+*.vrb
+*.xdv
+*.acn
+*.acr
+*.alg
+*.glg
+*.glo
+*.gls
+*.ist
+_minted*
+latex.out/
+
+# =============================================================================
+# 6. OS, IDE & Backup Junk
+# =============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editors, IDEs & Local AI Agent Configurations
+.vscode/
+.idea/
+.agents/
+.agent/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+*.iml
+*.swp
+*.swo
+*.swn
+*.bak
+*.tmp
+*~
