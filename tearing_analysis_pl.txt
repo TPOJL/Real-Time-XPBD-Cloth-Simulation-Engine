@@ -1,0 +1,82 @@
+================================================================================
+NOTATKA DO PREZENTACJI: ROZRYWANIE TKANINY (14-CLOTH.HTML -> MAIN.PY)
+Proste wyjaśnienie 5 problemów z implementacją oraz naszego rozwiązania XPBD
+================================================================================
+
+W teorii samo wyłączenie pojedynczej krawędzi rozciągania w XPBD po przekroczeniu
+progu wytrzymałości (`if length > restLen * 2.25: restLen = -1.0`) zajmuje tylko
+~15 linijek kodu. W języku matematyki oznacza to ustawienie podatności
+alpha -> nieskończoność (brak siły ciągnącej: Delta_lambda = 0).
+
+Dlaczego więc na gotowej siatce trójkątów Matthiasa Müllera (`14-cloth.html`,
+3 321 wierzchołków, 6 400 trójkątów) te 15 linijek od razu psuje symulację?
+Podczas implementacji napotkaliśmy 5 bardzo konkretnych problemów:
+
+--------------------------------------------------------------------------------
+1. PIĘĆ PROBLEMÓW PRZY PRÓBIE NAIWNEGO ROZRYWANIA NA BAZIE `14-cloth.html`
+--------------------------------------------------------------------------------
+
+Problem 1: Współdzielone wierzchołki tworzą „gigantyczne trójkąty”
+   W `14-cloth.html` tablica `pos` przechowuje wspólne wierzchołki: jeden punkt
+   należy do 6–8 sąsiednich trójkątów. Jeśli wyłączymy więz tylko na 1 krawędzi
+   bez rozdzielenia samego wierzchołka na dwa niezależne punkty, sąsiednie
+   trójkąty nadal trzymają się go wspólnie — jeden róg zostaje na górze, a drugi
+   spada na dół, rozciągając jeden trójkąt na cały ekran. Z kolei proste
+   chowanie pękniętych trójkątów robi postrzępione dziury i „zjada” powierzchnię.
+
+Problem 2: „Niewidzialne” mostki zginania (`bendingIds`) trzymają ucięty kawałek
+   W wykładzie #14 opór zginania nie liczy kąta między trójkątami, tylko łączy
+   zwykłą nitką przeciwległe wierzchołki (p3 <-> p4) dwóch sąsiadów. Ta nitka
+   przeskakuje ponad wspólną krawędzią! Kiedy przetniesz tkaninę na dwie części,
+   więzy rozciągania pękają, ale mostki zginania nadal wiszą między połówkami —
+   odcięta dolna część potrafi wisieć w powietrzu jak na niewidzialnych sznurkach.
+
+Problem 3: Górne narożniki same pękają pod ciężarem tkaniny
+   Cała tkanina (3 321 cząstek) wisi wyłącznie na dwóch punktach: id = 0 oraz
+   id = 210. Pod samą grawitacją krawędzie tuż pod narożnikami wydłużają się aż
+   2.4x–2.7x, podczas gdy reszta płótna rozciąga się tylko o 1.2x–1.3x. Ustawienie
+   jednego progu (np. 2.25x) sprawia, że tkanina sama odrywa się ze stojaka po
+   uruchomieniu.
+
+Problem 4: Zbyt czuły chwyt jednopunktowy (`Grabber`)
+   Oryginalny `Grabber` łapie dokładnie jeden najbliższy wierzchołek i od razu
+   przesuwa go w miejsce kursora przed pierwszym podkrokiem. Gwałtowne
+   pociągnięcie 1 punktu sprawia, że 6 otaczających go nitek w ułamku klatki
+   wydłuża się o 4x–8x — tkanina rwie się od lekkiego dotknięcia myszką.
+
+Problem 5: Pętla topologii na bieżąco zabija wydajność (spadek do ~5 FPS)
+   W `14-cloth.html` lista krawędzi powstaje raz na starcie (`findTriNeighbors`).
+   Przeliczanie sąsiadów na nowo lub dokładanie nowych tablic w Pythonie podczas
+   każdego rozdarcia muli symulator z >150 FPS do ~5 FPS.
+
+--------------------------------------------------------------------------------
+2. JAK ROZWIĄZALIŚMY KAŻDY Z TYCH 5 PROBLEMÓW W `main.py`?
+--------------------------------------------------------------------------------
+Zamiast rezygnować z rozrywania lub usuwać trójkąty, zaimplementowaliśmy metodę
+Dynamic Vertex Splitting (`Cloth.splitVertex`):
+
+1) Zamiast dziur i gigantycznych trójkątów -> dzielimy wierzchołek `v` na `v_A` i `v_B`:
+   - W 2D-współrzędnych spoczynkowych `restPos` przecinamy wachlarz trójkątów
+     wokół `v` na dwie spójne strony (sprawdzane przez BFS).
+   - Tworzymy nowy wierzchołek `v_new`, przepisujemy na niego trójkąty strony B,
+     dzielimy masę proporcjonalnie (m_A + m_B = m_v) i duplikujemy krawędzie
+     na linii szwu — dzięki temu KAŻDY z 6 400 trójkątów zachowuje wszystkie 3 boki!
+
+2) Zamiast wiszących połówek -> przecinamy mostki zginania na szwie:
+   - Każdy więz zginania `bendingIds`, który po rozszczepieniu nadal łączy dwie
+     różne strony cięcia, natychmiast dostaje `bendingLengths[b] = -1.0`.
+   - Odcięty fragment jest w 100% niezależny i naturalnie spada na podłogę (y = 0).
+
+3) Zamiast samozrywania przy rogach -> chronimy strefę zaczepów:
+   - Krawędzie przy górnych punktach zawieszenia (`restPos_y >= 1.04`) nie pękają
+     od samej grawitacji, zachowując przy tym stabilne podtrzymanie ciężaru.
+
+4) Zamiast szpilki 1 pkt -> chwyt „palcami” o promieniu 2.5 cm:
+   - Gdy włączysz `Tear cloth`, `Grabber` chwyta łagodnie małą łatkę tkaniny
+     (`radius = 0.025 m`), rozkładając siłę jak ludzka dłoń — łatwo ją przesunąć,
+     a rozrywa się dopiero przy mocnym szarpnięciu (`tearThreshold = 2.25`).
+
+5) Zamiast 5 FPS -> wstępna alokacja buforów + interwał `sub % 3 == 2`:
+   - Tablice wierzchołków (`maxVerts = 3 * n0`) i więzów są zarezerwowane od razu
+     w pamięci, więc `splitVertex` aktualizuje tylko lokalne sąsiedztwo w O(deg),
+     utrzymując czas klatki na poziomie ok. 5–9 ms (>115–200 FPS)!
