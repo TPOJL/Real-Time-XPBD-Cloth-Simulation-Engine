@@ -1037,6 +1037,7 @@ gGrabber = None
 timeFrames = 0
 timeSum = 0.0
 msDisplay = "0.000"
+fpsDisplay = "0"
 
 
 def initPhysics():
@@ -1054,7 +1055,7 @@ def simulate():
     krawędzie — rozszczepienie wierzchołka przeplata się z podkrokami relaksacji, dzięki
     czemu pęknięcie propaguje się płynnie i nie blokuje pętli FPS.
     """
-    global timeFrames, timeSum, msDisplay
+    global timeFrames, timeSum, msDisplay, fpsDisplay
     if gPhysicsScene["paused"]:
         return
 
@@ -1087,6 +1088,7 @@ def simulate():
     if timeFrames > 10:
         timeSum /= timeFrames
         msDisplay = f"{timeSum:.3f}"
+        fpsDisplay = f"{1000.0 / timeSum:.0f}" if timeSum > 1e-6 else "0"
         timeFrames = 0
         timeSum = 0.0
 
@@ -1412,7 +1414,12 @@ class ClothSimulationApp(QtWidgets.QMainWindow):
 
         self.numTris = len(mesh["faceTriIds"]) // 3
         numVerts = gPhysicsScene["objects"][0].numParticles
-        self.stats_label = QtWidgets.QLabel(f"{self.numTris} tris  {numVerts} verts  0.000 ms per frame")
+        self.uiFrames = 0
+        self.uiFpsT0 = time.perf_counter()
+        self.uiFpsDisplay = "0"
+        self.stats_label = QtWidgets.QLabel(
+            f"{self.numTris} tris  {numVerts} verts  0.000 ms per frame  |  0 FPS (sim)  |  0 FPS (UI)"
+        )
         self.stats_label.setFont(QtGui.QFont("Verdana", 11))
         layout.addWidget(self.stats_label)
 
@@ -1454,17 +1461,33 @@ class ClothSimulationApp(QtWidgets.QMainWindow):
         gPhysicsScene["paused"] = not gPhysicsScene["paused"]
 
     def restart(self):
+        global timeFrames, timeSum, msDisplay, fpsDisplay
         initPhysics()
         gPhysicsScene["sphereGrabbed"] = False
         gPhysicsScene["spherePos"][:] = [0.0, 0.45, 0.28]
         gPhysicsScene["sphereVel"][:] = [0.0, 0.0, 0.0]
+        timeFrames = 0
+        timeSum = 0.0
+        msDisplay = "0.000"
+        fpsDisplay = "0"
         for obj in gPhysicsScene["objects"]:
             obj.bendingCompliance = float(self.slider.value())
 
     def update_loop(self):
         simulate()
+        # Zliczanie rzeczywistego klatkażu okna UI (odświeżane co 0.5 s)
+        self.uiFrames += 1
+        now = time.perf_counter()
+        elapsed = now - self.uiFpsT0
+        if elapsed >= 0.5:
+            self.uiFpsDisplay = f"{self.uiFrames / elapsed:.0f}"
+            self.uiFrames = 0
+            self.uiFpsT0 = now
         numVerts = gPhysicsScene["objects"][0].numParticles
-        self.stats_label.setText(f"{self.numTris} tris  {numVerts} verts  {msDisplay} ms per frame")
+        sim_fps = "0" if gPhysicsScene["paused"] else fpsDisplay
+        self.stats_label.setText(
+            f"{self.numTris} tris  {numVerts} verts  {msDisplay} ms per frame  |  {sim_fps} FPS (sim)  |  {self.uiFpsDisplay} FPS (UI)"
+        )
         self.canvas.update()
 
 
