@@ -125,7 +125,7 @@ gPhysicsScene = {
     "sphereVel": np.array([0.0, 0.0, 0.0], dtype=np.float32),   # Prędkość kuli (podlega grawitacji i rzutom myszką)
     "sphereRadius": 0.12,                                       # Promień kuli
     "tearEnabled": False,                                       # Dodatkowa funkcja 3: Rozrywanie tkaniny (Vertex Splitting)
-    "tearThreshold": 2.25,                                      # Próg rozrywania: powyżej 2.25x długości spoczynkowej
+    "tearThreshold": 2.00,                                      # Próg rozrywania: powyżej 2.0x długości spoczynkowej
     "objects": [],
 }
 
@@ -338,14 +338,17 @@ def _postSolve_kernel(numParticles, pos, prevPos, vel, invMass, dt):
 
 
 @njit
-def _find_overstretched_edge_kernel(pos, restPos, stretchingIds, stretchingLengths, numStretch, threshold):
+def _find_overstretched_edges_kernel(
+    pos, restPos, stretchingIds, stretchingLengths, numStretch, threshold, outEdges, outRatios
+):
     """
-    Szybkie wyszukiwanie najbardziej napiętej krawędzi siatki, która przekroczyła
+    Szybkie wyszukiwanie listy top-K najbardziej napiętych krawędzi siatki przekraczających
     próg rozciągnięcia (length / restLen > threshold), z pominięciem strefy przy dwóch
-    górnych punktach mocowania (restPos_y >= 1.04), aby tkanina nie zrywała się pod własnym ciężarem.
+    górnych punktach mocowania (restPos_y >= 1.04). Zwracanie listy kandydatów zapobiega
+    blokowaniu rozrywania przez pojedynczą narożną krawędź (1 trójkąt) na brzegu szczeliny.
     """
-    best_e = -1
-    best_ratio = threshold
+    max_k = len(outEdges)
+    count = 0
     for i in range(numStretch):
         id0 = stretchingIds[2 * i]
         id1 = stretchingIds[2 * i + 1]
@@ -353,10 +356,21 @@ def _find_overstretched_edge_kernel(pos, restPos, stretchingIds, stretchingLengt
             continue
         length = math.sqrt(vecDistSquared(pos, id0, pos, id1))
         ratio = length / stretchingLengths[i]
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_e = i
-    return best_e, best_ratio
+        if ratio > threshold:
+            if count < max_k:
+                pos_idx = count
+                count += 1
+            elif ratio > outRatios[max_k - 1]:
+                pos_idx = max_k - 1
+            else:
+                continue
+            while pos_idx > 0 and ratio > outRatios[pos_idx - 1]:
+                outEdges[pos_idx] = outEdges[pos_idx - 1]
+                outRatios[pos_idx] = outRatios[pos_idx - 1]
+                pos_idx -= 1
+            outEdges[pos_idx] = i
+            outRatios[pos_idx] = ratio
+    return count
 
 
 @njit
@@ -478,6 +492,8 @@ class Cloth:
 
         self.temp = np.zeros(4 * 3, dtype=np.float32)
         self.grads = np.zeros(4 * 3, dtype=np.float32)
+        self.tearCandEdges = np.zeros(16, dtype=np.int32)
+        self.tearCandRatios = np.zeros(16, dtype=np.float32)
 
         # Dane chwytu myszką (zarówno pojedynczego wierzchołka, jak i małego obszaru palców przy rozrywaniu)
         self.grabIds = []
@@ -556,63 +572,100 @@ class Cloth:
         if len(tris) < 2:
             return False
 
-        rvx, rvy = float(self.restPos[3 * v]), float(self.restPos[3 * v + 1])
-        T_A = set()
-        T_B = set()
-        dots = {}
-
-        for t in tris:
-            i0, i1, i2 = int(self.faceTriIds[3 * t]), int(self.faceTriIds[3 * t + 1]), int(self.faceTriIds[3 * t + 2])
-            cx = (self.restPos[3 * i0] + self.restPos[3 * i1] + self.restPos[3 * i2]) / 3.0 - rvx
-            cy = (self.restPos[3 * i0 + 1] + self.restPos[3 * i1 + 1] + self.restPos[3 * i2 + 1]) / 3.0 - rvy
-            d = float(cx * nx + cy * ny)
-            dots[t] = d
-            if d >= 0.0:
-                T_A.add(t)
-            else:
-                T_B.add(t)
-
-        if not T_A or not T_B:
-            return False
-
-        # Zachowujemy spójność topologiczną wachlarza T_B wokół wierzchołka `v` (2-manifold)
-        adj_B = {t: [] for t in T_B}
+        # Budujemy graf sąsiedztwa trójkątów wokół `v` przez wspólne krawędzie wewnętrzne
+        full_adj = {t: [] for t in tris}
         for e in self.vert_edges[v]:
             t0, t1 = self.edge_tris[e]
-            if t0 in T_B and t1 in T_B:
-                adj_B[t0].append(t1)
-                adj_B[t1].append(t0)
-        seed_B = min(T_B, key=lambda t: dots[t])
-        comp_B = {seed_B}
-        stack = [seed_B]
-        while stack:
-            cur = stack.pop()
-            for nxt in adj_B[cur]:
-                if nxt not in comp_B:
-                    comp_B.add(nxt)
-                    stack.append(nxt)
-        if len(comp_B) < len(T_B):
-            T_A = T_A | (T_B - comp_B)
-            T_B = comp_B
+            if t0 in full_adj and t1 in full_adj:
+                full_adj[t0].append(t1)
+                full_adj[t1].append(t0)
 
-        # Sprawdzamy również spójność strony T_A, aby nie utworzyć zdegenerowanego styku punktowego
-        adj_A = {t: [] for t in T_A}
-        for e in self.vert_edges[v]:
-            t0, t1 = self.edge_tris[e]
-            if t0 in T_A and t1 in T_A:
-                adj_A[t0].append(t1)
-                adj_A[t1].append(t0)
-        seed_A = max(T_A, key=lambda t: dots[t])
-        comp_A = {seed_A}
-        stack = [seed_A]
+        # Krok 0 (Pinch vertex): jeśli wachlarz wokół `v` składa się już z 2+ rozłącznych
+        # płatów połączonych tylko jednym wspólnym punktem (częste na brzegu starego rozdarcia),
+        # natychmiast je rozpinamy bez blokowania dalszego rozrywania!
+        fan0 = {tris[0]}
+        stack = [tris[0]]
         while stack:
             cur = stack.pop()
-            for nxt in adj_A[cur]:
-                if nxt not in comp_A:
-                    comp_A.add(nxt)
+            for nxt in full_adj[cur]:
+                if nxt not in fan0:
+                    fan0.add(nxt)
                     stack.append(nxt)
-        if len(comp_A) < len(T_A) or not T_A or not T_B:
-            return False
+
+        if len(fan0) < len(tris):
+            T_B = fan0
+            T_A = set(tris) - fan0
+        else:
+            rvx, rvy = float(self.restPos[3 * v]), float(self.restPos[3 * v + 1])
+            T_A = set()
+            T_B = set()
+            dots = {}
+
+            for t in tris:
+                i0, i1, i2 = int(self.faceTriIds[3 * t]), int(self.faceTriIds[3 * t + 1]), int(self.faceTriIds[3 * t + 2])
+                cx = (self.restPos[3 * i0] + self.restPos[3 * i1] + self.restPos[3 * i2]) / 3.0 - rvx
+                cy = (self.restPos[3 * i0 + 1] + self.restPos[3 * i1 + 1] + self.restPos[3 * i2 + 1]) / 3.0 - rvy
+                d = float(cx * nx + cy * ny)
+                dots[t] = d
+                if d >= 0.0:
+                    T_A.add(t)
+                else:
+                    T_B.add(t)
+
+            # Jeśli wierzchołek leży na brzegu szczeliny i płaszczyzna ominęła pół-wachlarz,
+            # dzielimy trójkąty w połowie wzdłuż rzutu `dots`, aby szczelina mogła iść dalej.
+            if not T_A or not T_B:
+                ordered = sorted(tris, key=lambda t: dots[t])
+                half = len(ordered) // 2
+                T_B = set(ordered[:half])
+                T_A = set(ordered[half:])
+
+            # Zachowujemy spójność topologiczną wachlarza T_B wokół wierzchołka `v` (2-manifold)
+            seed_B = min(T_B, key=lambda t: dots[t])
+            comp_B = {seed_B}
+            stack = [seed_B]
+            while stack:
+                cur = stack.pop()
+                for nxt in full_adj[cur]:
+                    if nxt in T_B and nxt not in comp_B:
+                        comp_B.add(nxt)
+                        stack.append(nxt)
+            if len(comp_B) < len(T_B):
+                T_A = T_A | (T_B - comp_B)
+                T_B = comp_B
+
+            # Sprawdzamy również spójność strony T_A (dla otwartego pół-wachlarza na brzegu
+            # cięcie mogło trafić w środek łańcucha — wtedy tniemy od końca łańcucha w połowie).
+            seed_A = max(T_A, key=lambda t: dots[t])
+            comp_A = {seed_A}
+            stack = [seed_A]
+            while stack:
+                cur = stack.pop()
+                for nxt in full_adj[cur]:
+                    if nxt in T_A and nxt not in comp_A:
+                        comp_A.add(nxt)
+                        stack.append(nxt)
+            if len(comp_A) < len(T_A):
+                endpoints = [t for t in tris if len(full_adj[t]) <= 1]
+                if not endpoints:
+                    return False
+                start_t = min(endpoints, key=lambda t: dots[t])
+                chain = [start_t]
+                prev_t = -1
+                cur_t = start_t
+                while len(chain) < len(tris):
+                    nxts = [nt for nt in full_adj[cur_t] if nt != prev_t]
+                    if not nxts:
+                        break
+                    prev_t, cur_t = cur_t, nxts[0]
+                    chain.append(cur_t)
+                if len(chain) < 2:
+                    return False
+                half = len(chain) // 2
+                T_B = set(chain[:half])
+                T_A = set(chain[half:])
+                if not T_A or not T_B:
+                    return False
 
         # Alokacja nowego wierzchołka v_new i skopiowanie jego stanu kinematycznego
         v_new = self.numParticles
@@ -709,32 +762,45 @@ class Cloth:
 
         return True
 
-    def tryTearStep(self):
-        """Sprawdza najbardziej napiętą krawędź po relaksacji podkroków i rozszczepia jej wierzchołek."""
-        e, _ = _find_overstretched_edge_kernel(
+    def tryTearStep(self, max_splits=2):
+        """
+        Sprawdza top-K najbardziej napiętych krawędzi po relaksacji podkroków i rozszczepia
+        ich wierzchołki (do `max_splits` na wywołanie), pomijając zablokowane rogi 1-trójkątowe.
+        """
+        n_cand = _find_overstretched_edges_kernel(
             self.pos, self.restPos, self.stretchingIds, self.stretchingLengths,
-            self.numStretch, gPhysicsScene["tearThreshold"]
+            self.numStretch, gPhysicsScene["tearThreshold"],
+            self.tearCandEdges, self.tearCandRatios
         )
-        if e < 0:
+        if n_cand == 0:
             return False
-        id0 = int(self.stretchingIds[2 * e])
-        id1 = int(self.stretchingIds[2 * e + 1])
-        nx = float(self.restPos[3 * id1] - self.restPos[3 * id0])
-        ny = float(self.restPos[3 * id1 + 1] - self.restPos[3 * id0 + 1])
-        # Preferujemy rozszczepienie wierzchołka o większej liczbie sąsiednich trójkątów (lub spoza chwytu)
-        if id0 in self.grabIds and id1 not in self.grabIds:
-            order = ((id1, -nx, -ny), (id0, nx, ny))
-        elif id1 in self.grabIds and id0 not in self.grabIds:
-            order = ((id0, nx, ny), (id1, -nx, -ny))
-        elif len(self.vert_tris[id0]) >= len(self.vert_tris[id1]):
-            order = ((id0, nx, ny), (id1, -nx, -ny))
-        else:
-            order = ((id1, -nx, -ny), (id0, nx, ny))
 
-        for vid, cnx, cny in order:
-            if self.splitVertex(vid, cnx, cny):
-                return True
-        return False
+        splits = 0
+        for k in range(n_cand):
+            e = int(self.tearCandEdges[k])
+            if e >= self.numStretch:
+                continue
+            id0 = int(self.stretchingIds[2 * e])
+            id1 = int(self.stretchingIds[2 * e + 1])
+            nx = float(self.restPos[3 * id1] - self.restPos[3 * id0])
+            ny = float(self.restPos[3 * id1 + 1] - self.restPos[3 * id0 + 1])
+            # Preferujemy rozszczepienie wierzchołka o większej liczbie trójkątów (lub spoza chwytu)
+            if id0 in self.grabIds and id1 not in self.grabIds:
+                order = ((id1, -nx, -ny), (id0, nx, ny))
+            elif id1 in self.grabIds and id0 not in self.grabIds:
+                order = ((id0, nx, ny), (id1, -nx, -ny))
+            elif len(self.vert_tris[id0]) >= len(self.vert_tris[id1]):
+                order = ((id0, nx, ny), (id1, -nx, -ny))
+            else:
+                order = ((id1, -nx, -ny), (id0, nx, ny))
+
+            for vid, cnx, cny in order:
+                if self.splitVertex(vid, cnx, cny):
+                    splits += 1
+                    break
+            if splits >= max_splits:
+                break
+        return splits > 0
 
     def preSolve(self, dt, gravity):
         _preSolve_kernel(
@@ -821,10 +887,13 @@ class Cloth:
             vecCopy(self.pos, closest_id, p, 0)
 
     def moveGrabbed(self, pos, vel):
-        """Przesuwa chwycone wierzchołki zgodnie z ruchem kursora myszy."""
+        """Przesuwa chwycone wierzchołki zgodnie z ruchem kursora myszy (nie poniżej podłogi y = 0)."""
         p = np.array([pos[0], pos[1], pos[2]], dtype=np.float32)
         for idx, vid in enumerate(self.grabIds):
-            self.pos[3 * vid:3 * vid + 3] = p + self.grabOffsets[idx]
+            target = p + self.grabOffsets[idx]
+            if target[1] < 0.002:
+                target[1] = 0.002
+            self.pos[3 * vid:3 * vid + 3] = target
 
     def endGrab(self, pos, vel):
         """Puszcza chwycone wierzchołki: przywraca ich masy i nadaje prędkość ruchu myszy."""

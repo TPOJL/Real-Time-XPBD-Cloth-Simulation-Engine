@@ -4,7 +4,7 @@ Proste wyjaśnienie 5 problemów z implementacją oraz naszego rozwiązania XPBD
 ================================================================================
 
 W teorii samo wyłączenie pojedynczej krawędzi rozciągania w XPBD po przekroczeniu
-progu wytrzymałości (`if length > restLen * 2.25: restLen = -1.0`) zajmuje tylko
+progu wytrzymałości (`if length > restLen * 2.00: restLen = -1.0`) zajmuje tylko
 ~15 linijek kodu. W języku matematyki oznacza to ustawienie podatności
 alpha -> nieskończoność (brak siły ciągnącej: Delta_lambda = 0).
 
@@ -35,7 +35,7 @@ Problem 3: Górne narożniki same pękają pod ciężarem tkaniny
    Cała tkanina (3 321 cząstek) wisi wyłącznie na dwóch punktach: id = 0 oraz
    id = 210. Pod samą grawitacją krawędzie tuż pod narożnikami wydłużają się aż
    2.4x–2.7x, podczas gdy reszta płótna rozciąga się tylko o 1.2x–1.3x. Ustawienie
-   jednego progu (np. 2.25x) sprawia, że tkanina sama odrywa się ze stojaka po
+   jednego progu (np. 2.00x) sprawia, że tkanina sama odrywa się ze stojaka po
    uruchomieniu.
 
 Problem 4: Zbyt czuły chwyt jednopunktowy (`Grabber`)
@@ -57,7 +57,9 @@ Dynamic Vertex Splitting (`Cloth.splitVertex`):
 
 1) Zamiast dziur i gigantycznych trójkątów -> dzielimy wierzchołek `v` na `v_A` i `v_B`:
    - W 2D-współrzędnych spoczynkowych `restPos` przecinamy wachlarz trójkątów
-     wokół `v` na dwie spójne strony (sprawdzane przez BFS).
+     wokół `v` na dwie spójne strony (sprawdzane przez BFS), a jeśli dwa płaty
+     stykają się już tylko w jednym punkcie (pinch vertex na brzegu starego szwu),
+     natychmiast je rozpinamy.
    - Tworzymy nowy wierzchołek `v_new`, przepisujemy na niego trójkąty strony B,
      dzielimy masę proporcjonalnie (m_A + m_B = m_v) i duplikujemy krawędzie
      na linii szwu — dzięki temu KAŻDY z 6 400 trójkątów zachowuje wszystkie 3 boki!
@@ -73,10 +75,12 @@ Dynamic Vertex Splitting (`Cloth.splitVertex`):
 
 4) Zamiast szpilki 1 pkt -> chwyt „palcami” o promieniu 2.5 cm:
    - Gdy włączysz `Tear cloth`, `Grabber` chwyta łagodnie małą łatkę tkaniny
-     (`radius = 0.025 m`), rozkładając siłę jak ludzka dłoń — łatwo ją przesunąć,
-     a rozrywa się dopiero przy mocnym szarpnięciu (`tearThreshold = 2.25`).
+     (`radius = 0.025 m`, z ograniczeniem nad podłogą `y >= 0.002 m`), rozkładając
+     siłę jak ludzka dłoń — rozrywa się dopiero przy mocnym szarpnięciu (`tearThreshold = 2.00`).
 
-5) Zamiast 5 FPS -> wstępna alokacja buforów + interwał `sub % 3 == 2`:
+5) Zamiast 5 FPS i zablokowanego szwu -> wstępna alokacja + top-16 kandydatów:
    - Tablice wierzchołków (`maxVerts = 3 * n0`) i więzów są zarezerwowane od razu
-     w pamięci, więc `splitVertex` aktualizuje tylko lokalne sąsiedztwo w O(deg),
-     utrzymując czas klatki na poziomie ok. 5–9 ms (>115–200 FPS)!
+     w pamięci, a jądro `_find_overstretched_edges_kernel` zwraca do 16 najbardziej
+     napiętych krawędzi (do 2 rozszczepień co 3 podkroki: `sub % 3 == 2`), dzięki
+     czemu pojedyncza krawędź na rogu nie blokuje dalszego rozrywania, a czas
+     klatki zostaje na poziomie ok. 5–9 ms (>115–200 FPS)!
